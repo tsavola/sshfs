@@ -11,7 +11,10 @@ Release 3.4.0 (2018-06-29)
   dated 1970-01-01
 * New `createmode` workaround.
 * Fix `fstat` workaround regression.
-
+* New max_conns option enables the use of multiple connections to
+  improve responsiveness during large file transfers. Rhanks to Timo
+  Savola for this feature!
+  
 Release 3.3.2 (2018-04-29)
 --------------------------
 
