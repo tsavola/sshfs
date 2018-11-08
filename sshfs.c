@@ -213,6 +213,7 @@ struct read_chunk {
 
 struct sshfs_file {
 	struct buffer handle;
+	const char *path;
 	struct list_head write_reqs;
 	pthread_cond_t write_finished;
 	int write_error;
@@ -270,6 +271,7 @@ struct sshfs {
 	char *host;
 	char *base_path;
 	GHashTable *reqtab;
+	GHashTable *pathfiles;
 	pthread_mutex_t lock;
 	unsigned int randseed;
 	int max_conns;
@@ -2644,6 +2646,7 @@ static int sshfs_open_common(const char *path, mode_t mode,
 		pflags |= SSH_FXF_APPEND;
 	
 	sf = g_new0(struct sshfs_file, 1);
+	sf->path = g_strdup(path);
 	list_init(&sf->write_reqs);
 	pthread_cond_init(&sf->write_finished, NULL);
 	/* Assume random read after open */
@@ -2655,6 +2658,7 @@ static int sshfs_open_common(const char *path, mode_t mode,
 	sf->conn = choose_conn();
 	sf->conn->file_count++;
 	sf->connver = sf->conn->connver;
+	g_hash_table_insert(sshfs.pathfiles, sf->path, sf);
 	pthread_mutex_unlock(&sshfs.lock);
 	buf_init(&buf, 0);
 	buf_add_path(&buf, path);
@@ -2763,7 +2767,10 @@ static void sshfs_file_put(struct sshfs_file *sf)
 	if (!sf->refs) {
 		pthread_mutex_lock(&sshfs.lock);
 		sf->conn->file_count--;
+		if (g_hash_table_lookup(sshfs.pathfiles, sf->path) == sf)
+			g_hash_table_remove(sshfs.pathfiles, sf->path);
 		pthread_mutex_unlock(&sshfs.lock);
+		g_free(sf->path);
 		g_free(sf);
 	}
 }
@@ -3271,11 +3278,13 @@ static int sshfs_getattr(const char *path, struct stat *stbuf,
 	struct buffer outbuf;
 	struct sshfs_file *sf = NULL;
 
-	if (fi != NULL && !sshfs.fstat_workaround) {
+	if (fi != NULL)
 		sf = get_sshfs_file(fi);
-		if (!sshfs_file_is_conn(sf))
-			return -EIO;
-	}
+	else
+		sf = g_hash_table_lookup(sshfs.pathfiles, path);
+
+	if (sf != NULL && !sshfs_file_is_conn(sf))
+		return -EIO;
 	
 
 	buf_init(&buf, 0);
@@ -3429,8 +3438,15 @@ static int processing_init(void)
 	for (i = 0; i < sshfs.max_conns; i++)
 		pthread_mutex_init(&sshfs.conns[i].lock_write, NULL);
 	pthread_cond_init(&sshfs.outstanding_cond, NULL);
+
 	sshfs.reqtab = g_hash_table_new(NULL, NULL);
 	if (!sshfs.reqtab) {
+		fprintf(stderr, "failed to create hash table\n");
+		return -1;
+	}
+
+	sshfs.pathfiles = g_hash_table_new(g_str_hash, g_str_equal);
+	if (!sshfs.pathfiles) {
 		fprintf(stderr, "failed to create hash table\n");
 		return -1;
 	}
